@@ -3,12 +3,14 @@
 #install.packages('plotly')
 #install.packages("shinydashboard")
 #install.packages("shinyWidgets")
+#install.packages("DT")
 
 library(shiny)
 library(tidyverse)
 library(plotly)
 library(shinyWidgets)
 library(shinydashboard)
+library(DT)
 
 ## Load data
 df <- read.csv("Global_Space_Exploration_Dataset.csv")
@@ -33,19 +35,47 @@ ui <- dashboardPage(
       #metric {
         margin-bottom: 20px;
       }
+      /* Slider label */
+      .slider-label {
+        font-size: 20px !important;
+        font-weight: bold;
+      }
+  
+      /* PickerInput label */
+      .bootstrap-select .dropdown-toggle .filter-option {
+        font-size: 20px !important;
+      }
+      .bootstrap-select .dropdown-menu > .dropdown-menu.inner > li > a {
+        font-size: 20px !important;
+      }
+  
+      /* RadioGroupButtons */
+      .btn-group .btn {
+        font-size: 20px !important;
+      }
+      .radio-group-buttons .btn {
+        font-size: 20px !important;
+      }
+    
       /* Make table fill the column */
       #summaryTable {
         width: 100% !important;
         height: 600px;
         overflow-y: auto;
         display: block;
-        font-size: 14px;
+        font-size: 20px;
       }
       /* Style table header */
       #summaryTable thead tr {
         background-color: #003366;  /* Dark blue */
         color: white;
         font-weight: bold;
+      }
+      .small-box h3 {
+      font-size: 40px !important;
+      }
+      .small-box p {
+        font-size: 20px !important;
       }
     "))
     ),
@@ -70,15 +100,15 @@ ui <- dashboardPage(
             radioGroupButtons(
               inputId = "missionType", 
               label = "Mission Type:",
-              choices = unique(df$Mission.Type),
-              selected = "Manned",
+              choices = c("Both", unique(df$Mission.Type)),
+              selected = "Both",
               justified = TRUE,
               status = "primary"
             )
           )
         ),
         
-        # KPI boxes
+        # KPI boxes contain overview value
         fluidRow(
           valueBoxOutput("totalMissions"),
           valueBoxOutput("totalBudget"),
@@ -87,7 +117,7 @@ ui <- dashboardPage(
         
         # Main plots
         fluidRow(
-          box(title = tags$span(style = "font-size: 22px;  font font-weight: bold; color: #003366;", "Budget Over Time"), width = 6, plotlyOutput("budgetPlot")),
+          box(title = tags$span(style = "font-size: 22px; font-weight: bold; color: #003366;", "Budget Over Time"), width = 6, plotlyOutput("budgetPlot")),
           box(title = tags$span(style = "font-size: 22px; font-weight: bold; color: #003366;", "Success by Technology"), width = 6, plotlyOutput("techPlot"))
         ),
         
@@ -120,7 +150,7 @@ ui <- dashboardPage(
               ),
               column(
                 width = 4,
-                tableOutput("summaryTable")
+                DT::dataTableOutput("summaryTable")
               )
             )
           )
@@ -138,12 +168,17 @@ ui <- dashboardPage(
 
 server <- function(input, output) {
   filtered <- reactive({
-    df %>%
+    data <- df %>%
       filter(Year >= input$year[1], Year <= input$year[2],
-        Country %in% input$country,
-        Mission.Type %in% input$missionType)
+             Country %in% input$country)
+    if (input$missionType != "Both") {
+      data <- data %>%
+        filter(Mission.Type == input$missionType)
+    }
+    data
   })
   
+  # Three total value box for selected countries
   output$totalMissions <- renderValueBox({
     total <- nrow(filtered())
     valueBox(total, "Total Missions", icon = icon("rocket"), color = "blue")
@@ -159,13 +194,81 @@ server <- function(input, output) {
     valueBox(paste0(round(avgSuccess, 1), "%"), "Avg Success Rate", icon = icon("check-circle"), color = "yellow")
   })
   
+  # A animated line plot that shows budget overtime
   output$budgetPlot <- renderPlotly({
-    filtered() %>%
+    # Create a cumulative dataset for animation
+    animated_data <- filtered() %>%
       group_by(Year, Country) %>%
       summarise(TotalBudget = sum(Budget..in.Billion..., na.rm = TRUE)) %>%
-      plot_ly(x = ~Year, y = ~TotalBudget, color = ~Country, type = 'scatter', mode = 'lines+markers')
+      ungroup()
+    
+    # Create a list of frames — each frame contains all years up to current point
+    years <- sort(unique(animated_data$Year))
+    
+    frames <- lapply(years, function(y) {
+      animated_data %>%
+        filter(Year <= y) %>%
+        mutate(FrameYear = y)
+    }) %>%
+      bind_rows()
+    
+    plot_ly(
+      data = frames,
+      x = ~Year,
+      y = ~TotalBudget,
+      color = ~Country,
+      frame = ~FrameYear,
+      type = 'scatter',
+      mode = 'lines+markers',
+      text = ~paste("Country:", Country,
+                    "<br>Year:", Year,
+                    "<br>Budget:", round(TotalBudget, 2), "B"),
+      hoverinfo = 'text',
+      marker = list(size = 8),
+      line = list(shape = 'linear')
+    ) %>%
+      layout(
+        title = list(text = "Cumulative Budget Evolution Over Time"),
+        xaxis = list(title = "Year"),
+        yaxis = list(title = "Total Budget (Billion $)"),
+        showlegend = TRUE,
+        updatemenus = list(
+          list(
+            type = "buttons",
+            buttons = list(
+              list(
+                method = "animate",
+                args = list(NULL, list(
+                  frame = list(duration = 500, redraw = TRUE),
+                  transition = list(duration = 300),
+                  fromcurrent = TRUE,
+                  mode = "immediate"
+                )),
+                label = "Play"
+              ),
+              list(
+                method = "animate",
+                args = list(NULL, list(
+                  frame = list(duration = 0, redraw = TRUE),
+                  mode = "immediate"
+                )),
+                label = "Pause"
+              )
+            )
+          )
+        )
+      ) %>%
+      animation_opts(
+        frame = 500,
+        transition = 300,
+        redraw = TRUE
+      ) %>%
+      animation_slider(
+        currentvalue = list(prefix = "Year: ")
+      )
   })
   
+  # A bar chart show success rate with different technology
   output$techPlot <- renderPlotly({
     filtered() %>%
       group_by(Technology.Used) %>%
@@ -174,22 +277,29 @@ server <- function(input, output) {
       layout(yaxis = list(title = "Avg Success Rate (%)"))
   })
   
+  # A pie chart show mission types of satellite
   output$satTypePlot <- renderPlotly({
     filtered() %>%
       count(Satellite.Type) %>%
       plot_ly(labels = ~Satellite.Type, values = ~n, type = 'pie')
   })
   
+  # A bar chart show collaborations with other countries
   output$collabPlot <- renderPlotly({
     collabs <- filtered() %>%
       count(Collaborating.Countries) %>%
       arrange(desc(n)) %>%
-      head(10)
+      head(10) %>%
+      mutate(Collaborating.Countries = factor(Collaborating.Countries, levels = rev(Collaborating.Countries)))
     
     plot_ly(collabs, x = ~Collaborating.Countries, y = ~n, type = 'bar') %>%
-      layout(xaxis = list(title = "Collaboration"), yaxis = list(title = "Mission Count"))
+      layout(
+        xaxis = list(title = "Collaboration", categoryorder = "array", categoryarray = rev(collabs$Collaborating.Countries)),
+        yaxis = list(title = "Mission Count")
+      )
   })
   
+  # A scatter plot show relationship between budget and successful launch rate
   output$scatterPlot <- renderPlotly({
     plot_ly(filtered(), x = ~Budget..in.Billion..., y = ~Success.Rate....,
             type = 'scatter', mode = 'markers',
@@ -227,24 +337,44 @@ server <- function(input, output) {
   })
   
   # Render summary table
-  output$summaryTable <- renderTable({
+  output$summaryTable <- DT::renderDataTable({
     summaryData() %>%
+      mutate(Value = round(Value, 2)) %>%
       rename(
         Country = Country,
         !!input$metric := Value
       )
-  }, striped = TRUE, hover = TRUE, spacing = "xs")
+  }, options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    scrollY = "400px"
+  ))
   
   # Render map with selected metric
   output$worldMapPlot <- renderPlotly({
     data <- summaryData()
     
-    # Choose colorscale and hover label dynamically
-    colorbar_title <- switch(
-      input$metric,
-      launches = "Number of Launches",
-      budget = "Budget (Billion $)",
-      success = "Success Rate (%)"
+    # Define value bins for color
+    data <- data %>%
+      mutate(
+        bin = case_when(
+          Value > 2 ~ "> 2",
+          Value > 1.5 ~ "1.5–2.0",
+          Value > 1.0 ~ "1.0–1.5",
+          Value > 0.5 ~ "0.5–1.0",
+          Value > 0 ~ "0–0.5",
+          TRUE ~ "No Data"
+        )
+      )
+    
+    # Set a manual color scale
+    bin_colors <- c(
+      "0–0.5" = "#d1e5f0",
+      "0.5–1.0" = "#92c5de",
+      "1.0–1.5" = "#4393c3",
+      "1.5–2.0" = "#2166ac",
+      "> 2" = "#053061",
+      "No Data" = "#f0f0f0"
     )
     
     plot_ly(
@@ -254,15 +384,34 @@ server <- function(input, output) {
       locationmode = 'country names',
       z = ~Value,
       colorscale = 'Blues',
-      colorbar = list(title = colorbar_title),
-      text = ~paste(Country, "<br>", colorbar_title, ":", round(Value, 2))
+      colorbar = list(
+        title = list(text = switch(
+          input$metric,
+          launches = "Number of Launches",
+          budget = "Budget (Billion $)",
+          success = "Success Rate (%)"
+        )),
+        tickvals = c(min(data$Value, na.rm = TRUE), 
+                     median(data$Value, na.rm = TRUE), 
+                     max(data$Value, na.rm = TRUE)),
+        ticktext = c(paste0("Min (", round(min(data$Value, na.rm = TRUE), 2), ")"),
+                     paste0("Median (", round(median(data$Value, na.rm = TRUE), 2), ")"),
+                     paste0("Max (", round(max(data$Value, na.rm = TRUE), 2), ")"))
+      ),
+      text = ~paste0(
+        Country, "<br>", 
+        switch(input$metric, launches = "Launches", budget = "Budget", success = "Success"), 
+        ": ", format(round(Value, 2), nsmall = 2)
+      ),
+      hoverinfo = 'text'
     ) %>%
       layout(
         title = list(
-          text = paste0(colorbar_title, " by Country"),
-          font = list(family = "Roboto, sans-serif", size = 24, color = 'darkblue'),
+          text = "Space Exploration Launches by Country",
+          font = list(family = "Roboto, sans-serif", size = 20, color = '#333'),
           x = 0.5
-        )
+        ),
+        margin = list(t = 80, b = 0, l = 0, r = 0)  # <- Increase top margin (default ~40–50)
       )
   })
 }
